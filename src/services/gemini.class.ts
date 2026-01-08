@@ -9,7 +9,8 @@ import fs from "node:fs";
  */
 class GeminiService extends EventEmitter {
   private ai: any;
-  private fileSearchStore: any = null;
+  private fileUri: string | null = null;
+  private fileName: string | null = null;
   private isInitialized: boolean = false;
   private cachePath: string;
 
@@ -28,7 +29,7 @@ class GeminiService extends EventEmitter {
   }
 
   /**
-   * Loads the cached store name from disk.
+   * Loads the cached file info from disk.
    */
   private loadCache() {
     try {
@@ -36,10 +37,11 @@ class GeminiService extends EventEmitter {
         const cacheRaw = fs.readFileSync(this.cachePath, 'utf-8');
         if (cacheRaw) {
           const cache = JSON.parse(cacheRaw);
-          if (cache.storeName) {
-            this.fileSearchStore = { name: cache.storeName };
+          if (cache.fileUri && cache.fileName) {
+            this.fileUri = cache.fileUri;
+            this.fileName = cache.fileName;
             this.isInitialized = true;
-            console.log(`[GeminiService] Loaded cached store: ${cache.storeName}`);
+            console.log(`[GeminiService] Loaded cached file: ${cache.fileName}`);
           }
         }
       }
@@ -49,13 +51,17 @@ class GeminiService extends EventEmitter {
   }
 
   /**
-   * Saves the store name to disk cache.
+   * Saves the file info to disk cache.
    */
   private saveCache() {
     try {
-      if (this.fileSearchStore) {
-        fs.writeFileSync(this.cachePath, JSON.stringify({ storeName: this.fileSearchStore.name, updatedAt: new Date().toISOString() }));
-        console.log(`[GeminiService] Saved store to cache: ${this.fileSearchStore.name}`);
+      if (this.fileUri && this.fileName) {
+        fs.writeFileSync(this.cachePath, JSON.stringify({
+          fileUri: this.fileUri,
+          fileName: this.fileName,
+          updatedAt: new Date().toISOString()
+        }));
+        console.log(`[GeminiService] Saved file to cache: ${this.fileName}`);
       }
     } catch (error) {
       console.error("[GeminiService] Error saving cache:", error);
@@ -63,88 +69,107 @@ class GeminiService extends EventEmitter {
   }
 
   /**
-   * Initializes the File Search store and uploads the context PDF.
-   * This should be called before generateText if context is needed.
+   * Initializes the file by uploading it to Gemini Files API.
+   * Files stay for 48 hours, but we cache the URI to reuse it.
    */
-  async initializeFileSearch(filePath: string, storeDisplayName: string = "EmployeeInfoStore"): Promise<void> {
-    if (this.isInitialized) {
-      console.log(`[GeminiService] Already initialized with store: ${this.fileSearchStore?.name}`);
-      return;
+  async initializeFile(filePath: string): Promise<void> {
+    if (this.isInitialized && this.fileUri) {
+      // Check if file still exists in Gemini (simple check)
+      try {
+        await this.ai.files.get({ name: this.fileName });
+        console.log(`[GeminiService] Reusing active file: ${this.fileName}`);
+        return;
+      } catch (e) {
+        console.log("[GeminiService] Cached file expired or not found, re-uploading...");
+        this.isInitialized = false;
+      }
     }
 
     try {
-      console.log(`[GeminiService] Initializing File Search with: ${filePath}`);
+      console.log(`[GeminiService] Uploading file to Gemini: ${filePath}`);
 
-      // 1. Create or get the store
-      this.fileSearchStore = await this.ai.fileSearchStores.create({
-        config: { displayName: storeDisplayName }
-      });
-
-      // 2. Upload and import the file
-      let operation = await this.ai.fileSearchStores.uploadToFileSearchStore({
+      const uploadResult = await this.ai.files.upload({
         file: filePath,
-        fileSearchStoreName: this.fileSearchStore.name,
         config: {
           displayName: path.basename(filePath),
+          mimeType: "application/pdf"
         }
       });
 
-      // 3. Poll for completion
-      while (!operation.done) {
-        console.log("[GeminiService] Waiting for file indexing...");
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        operation = await this.ai.operations.get({ operation });
+      this.fileUri = uploadResult.file.uri;
+      this.fileName = uploadResult.file.name;
+
+      // Wait for the file to be processed (ACTUAL PROCESSING status check)
+      let file = await this.ai.files.get({ name: this.fileName });
+      while (file.state === "PROCESSING") {
+        console.log("[GeminiService] Processing file...");
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        file = await this.ai.files.get({ name: this.fileName });
+      }
+
+      if (file.state === "FAILED") {
+        throw new Error("File processing failed at Gemini");
       }
 
       this.isInitialized = true;
       this.saveCache();
-      console.log("[GeminiService] File Search initialized successfully.");
+      console.log("[GeminiService] File ready and cached.");
     } catch (error) {
-      console.error("[GeminiService] Error initializing File Search:", error);
+      console.error("[GeminiService] Error initializing file:", error);
       throw error;
     }
   }
 
   /**
-   * Generates content based on a text prompt, using the initialized File Search store as context.
-   * @param prompt The text prompt to send to the model.
-   * @param model The Gemini model to use (default: gemini-flash-latest).
-   * @returns The generated text or null if an error occurs.
+   * Generates content using the file as part of the multimodal context.
    */
-  async generateText(prompt: string, model: string = "gemini-flash-latest"): Promise<string | null> {
+  async generateText(systemInstruction: string, userMessage: string, model: string = "gemini-flash-latest"): Promise<string | null> {
     try {
-      const config: any = {};
+      const parts: any[] = [];
 
-      // If File Search is initialized, add it as a tool
-      if (this.isInitialized && this.fileSearchStore) {
-        config.tools = [
-          {
-            fileSearch: {
-              fileSearchStoreNames: [this.fileSearchStore.name]
-            }
+      // Add file if initialized
+      if (this.isInitialized && this.fileUri) {
+        parts.push({
+          fileData: {
+            fileUri: this.fileUri,
+            mimeType: "application/pdf"
           }
-        ];
+        });
       }
+
+      // Add user message part
+      parts.push({ text: userMessage });
 
       const response = await this.ai.models.generateContent({
         model: model,
-        contents: prompt,
-        config: config
+        contents: [
+          {
+            role: "user",
+            parts: parts
+          }
+        ],
+        config: {
+          systemInstruction: systemInstruction
+        }
       });
 
       return response.text;
     } catch (error: any) {
-      if (error.status === 404) {
-        console.warn("[GeminiService] Store not found. Clearing cache.");
+      console.error(`[GeminiService] Error generating content with ${model}:`, error.message || error);
+
+      // If 404 (file not found/expired), clear cache
+      if (error.status === 404 || (error.message && error.message.includes("not found"))) {
+        console.warn("[GeminiService] File or model not found. Clearing cache.");
         this.isInitialized = false;
-        this.fileSearchStore = null;
+        this.fileUri = null;
+        this.fileName = null;
         if (fs.existsSync(this.cachePath)) fs.unlinkSync(this.cachePath);
       }
-      console.error("[GeminiService] Error generating content:", error);
       return null;
     }
   }
 }
+
 
 
 

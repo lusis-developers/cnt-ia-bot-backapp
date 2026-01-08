@@ -28,14 +28,14 @@ const CONTRACTS_PATH = path.join(process.cwd(), "src/data/contracts.json");
 let isGeminiRagInitialized = false;
 
 /**
- * Ensures that the File Search store is initialized for Gemini.
+ * Ensures that the PDF is uploaded to Gemini (Multimodal).
  */
 async function ensureGeminiRag() {
   if (isGeminiRagInitialized) return;
   try {
-    await gemini.initializeFileSearch(PDF_PATH, "PrefectureStore");
+    await gemini.initializeFile(PDF_PATH);
     isGeminiRagInitialized = true;
-    console.log("Gemini RAG Initialized");
+    console.log("Gemini RAG (Multimodal) Initialized");
   } catch (err) {
     console.error("Gemini RAG Initialization error:", err);
   }
@@ -98,15 +98,28 @@ async function sendMessage(req: Request, res: Response) {
     } else {
       // Fallback to Gemini
       await ensureGeminiRag();
-      const geminiPrompt = `
+
+      const enhancedSystemPrompt = `
         ${systemPrompt}
         
-        CHAT HISTORY:
-        ${parsedHistory}
+        INSTRUCCIONES DE CONTEXTO (PDF):
+        - Se te ha proporcionado un archivo PDF que contiene la lista completa de empleados, sus cargos y remuneraciones.
+        - Analiza el documento detalladamente para responder preguntas sobre sueldos, nombres de directores y departamentos.
+        - Si el usuario pregunta por "Director de Tecnología", busca en la tabla de remuneraciones o el distributivo de personal.
+        - Responde basándote estrictamente en los datos del PDF.
         
-        User query: ${message}
+        HISTORIAL DE CHAT:
+        ${parsedHistory}
       `;
-      answer = await gemini.generateText(geminiPrompt);
+
+      answer = await gemini.generateText(enhancedSystemPrompt, message, "gemini-flash-latest");
+
+      // Si Gemini falla (ej. por cuota), intentamos con Claude como último recurso
+      if (!answer && CLAUDE_KEY) {
+        console.log("Gemini failed, trying Claude as final fallback...");
+        await ensureClaudeRag();
+        answer = await claude.generateText(systemPrompt, message, history || []);
+      }
     }
 
     res.status(HttpStatusCode.Ok).send({
