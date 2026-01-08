@@ -26,7 +26,6 @@ const CONTRACTS_PATH = path.join(process.cwd(), "src/data/contracts.json");
 
 // Flags to track RAG initialization
 let isGeminiRagInitialized = false;
-let claudeFileId: string | null = null;
 
 /**
  * Ensures that the File Search store is initialized for Gemini.
@@ -46,10 +45,8 @@ async function ensureGeminiRag() {
  * Ensures that the PDF is uploaded to Claude.
  */
 async function ensureClaudeRag() {
-  if (claudeFileId) return;
   try {
-    claudeFileId = await claude.uploadFile(PDF_PATH);
-    console.log("Claude RAG Initialized (File Uploaded)");
+    await claude.uploadFile(PDF_PATH);
   } catch (err) {
     console.error("Claude RAG Initialization error:", err);
   }
@@ -62,7 +59,7 @@ async function ensureClaudeRag() {
  */
 async function sendMessage(req: Request, res: Response) {
   try {
-    const { message, history, provider = "claude" } = req.body;
+    const { message, history, provider = "gemini" } = req.body;
 
     if (!message) {
       res.status(HttpStatusCode.BadRequest).send({
@@ -95,6 +92,7 @@ async function sendMessage(req: Request, res: Response) {
     let answer: string | null = null;
 
     if (provider === "claude" && CLAUDE_KEY) {
+      // The service now handles caching internally, so no need for external ID management
       await ensureClaudeRag();
       answer = await claude.generateText(systemPrompt, message, history || []);
     } else {
