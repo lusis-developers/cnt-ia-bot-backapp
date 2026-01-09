@@ -1,16 +1,14 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import fs from "node:fs";
 
 /**
  * GeminiService Class
- * Handles interactions with Google's Gemini AI models, including File Search (RAG).
+ * Handles interactions with Google's Gemini AI models using the standard SDK.
  */
 class GeminiService extends EventEmitter {
-  private ai: any;
-  private fileUri: string | null = null;
-  private fileName: string | null = null;
+  private genAI: GoogleGenerativeAI;
   private isInitialized: boolean = false;
   private cachePath: string;
 
@@ -21,163 +19,74 @@ class GeminiService extends EventEmitter {
       throw new Error("GEMINI_API_KEY is missing");
     }
 
-    this.ai = new GoogleGenAI({
-      apiKey: apiKey,
-    });
+    this.genAI = new GoogleGenerativeAI(apiKey);
     this.cachePath = path.resolve(process.cwd(), "src/data/.gemini_cache.json");
-    this.loadCache();
   }
 
   /**
-   * Loads the cached file info from disk.
+   * Generates content using context provided (Vector RAG style).
    */
-  private loadCache() {
+  async generateTextWithContext(systemInstruction: string, userMessage: string, context: string, model: string = "gemini-1.5-flash"): Promise<string | null> {
     try {
-      if (fs.existsSync(this.cachePath)) {
-        const cacheRaw = fs.readFileSync(this.cachePath, 'utf-8');
-        if (cacheRaw) {
-          const cache = JSON.parse(cacheRaw);
-          if (cache.fileUri && cache.fileName) {
-            this.fileUri = cache.fileUri;
-            this.fileName = cache.fileName;
-            this.isInitialized = true;
-            console.log(`[GeminiService] Loaded cached file: ${cache.fileName}`);
-          }
-        }
-      }
-    } catch (error) {
-      console.error("[GeminiService] Error loading cache:", error);
-    }
-  }
-
-  /**
-   * Saves the file info to disk cache.
-   */
-  private saveCache() {
-    try {
-      if (this.fileUri && this.fileName) {
-        fs.writeFileSync(this.cachePath, JSON.stringify({
-          fileUri: this.fileUri,
-          fileName: this.fileName,
-          updatedAt: new Date().toISOString()
-        }));
-        console.log(`[GeminiService] Saved file to cache: ${this.fileName}`);
-      }
-    } catch (error) {
-      console.error("[GeminiService] Error saving cache:", error);
-    }
-  }
-
-  /**
-   * Initializes the file by uploading it to Gemini Files API.
-   * Files stay for 48 hours, but we cache the URI to reuse it.
-   */
-  async initializeFile(filePath: string): Promise<void> {
-    if (this.isInitialized && this.fileUri) {
-      // Check if file still exists in Gemini (simple check)
-      try {
-        await this.ai.files.get({ name: this.fileName });
-        console.log(`[GeminiService] Reusing active file: ${this.fileName}`);
-        return;
-      } catch (e) {
-        console.log("[GeminiService] Cached file expired or not found, re-uploading...");
-        this.isInitialized = false;
-      }
-    }
-
-    try {
-      console.log(`[GeminiService] Uploading file to Gemini: ${filePath}`);
-
-      const uploadResult = await this.ai.files.upload({
-        file: filePath,
-        config: {
-          displayName: path.basename(filePath),
-          mimeType: "application/pdf"
-        }
+      const generativeModel = this.genAI.getGenerativeModel({
+        model: model,
+        systemInstruction: systemInstruction
       });
 
-      console.log(`[GeminiService] Upload result:`, JSON.stringify(uploadResult, null, 2));
+      const fullPrompt = `Contexto del PDF:\n${context}\n\nPregunta: ${userMessage}`;
 
-      // Standard access for the newer SDK: result is the file object
-      this.fileUri = uploadResult.uri || (uploadResult.file && uploadResult.file.uri);
-      this.fileName = uploadResult.name || (uploadResult.file && uploadResult.file.name);
+      const result = await generativeModel.generateContent(fullPrompt);
+      const response = await result.response;
+      return response.text();
+    } catch (error: any) {
+      console.error(`[GeminiService] Error generating content with context:`, error.message || error);
+      return null;
+    }
+  }
 
-      if (!this.fileUri || !this.fileName) {
-        throw new Error("Could not extract fileUri or fileName from upload result");
-      }
-
-      // Wait for the file to be processed (ACTUAL PROCESSING status check)
-      let file = await this.ai.files.get({ name: this.fileName });
-      console.log(`[GeminiService] File initial state: ${file.state}`);
-
-      while (file.state === "PROCESSING") {
-        console.log("[GeminiService] Processing file...");
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        file = await this.ai.files.get({ name: this.fileName });
-      }
-
-      if (file.state === "FAILED") {
-        throw new Error("File processing failed at Gemini");
-      }
-
-      this.isInitialized = true;
-      this.saveCache();
-      console.log("[GeminiService] File ready and active.");
+  /**
+   * Generates embeddings for a given text.
+   */
+  async getEmbeddings(text: string): Promise<number[]> {
+    try {
+      const model = this.genAI.getGenerativeModel({ model: "text-embedding-004" });
+      const result = await model.embedContent(text);
+      return result.embedding.values;
     } catch (error) {
-      console.error("[GeminiService] Error initializing file:", error);
+      console.error("[GeminiService] Error generating embeddings:", error);
       throw error;
     }
   }
 
   /**
-   * Generates content using the file as part of the multimodal context.
+   * Compatibility method for older multimodal approach.
    */
-  async generateText(systemInstruction: string, userMessage: string, model: string = "gemini-flash-latest"): Promise<string | null> {
+  async generateText(systemInstruction: string, userMessage: string, model: string = "gemini-1.5-flash"): Promise<string | null> {
     try {
-      const parts: any[] = [];
-
-      // Add file if initialized
-      if (this.isInitialized && this.fileUri) {
-        parts.push({
-          fileData: {
-            fileUri: this.fileUri,
-            mimeType: "application/pdf"
-          }
-        });
-      }
-
-      // Add user message part
-      parts.push({ text: userMessage });
-
-      const response = await this.ai.models.generateContent({
+      const generativeModel = this.genAI.getGenerativeModel({
         model: model,
-        contents: [
-          {
-            role: "user",
-            parts: parts
-          }
-        ],
-        config: {
-          systemInstruction: systemInstruction
-        }
+        systemInstruction: systemInstruction
       });
 
-      return response.text;
+      const result = await generativeModel.generateContent(userMessage);
+      const response = await result.response;
+      return response.text();
     } catch (error: any) {
       console.error(`[GeminiService] Error generating content with ${model}:`, error.message || error);
-
-      // If 404 (file not found/expired), clear cache
-      if (error.status === 404 || (error.message && error.message.includes("not found"))) {
-        console.warn("[GeminiService] File or model not found. Clearing cache.");
-        this.isInitialized = false;
-        this.fileUri = null;
-        this.fileName = null;
-        if (fs.existsSync(this.cachePath)) fs.unlinkSync(this.cachePath);
-      }
       return null;
     }
   }
+
+  /**
+   * Placeholder for file initialization (not strictly needed for Vector RAG but kept for compatibility).
+   */
+  async initializeFile(filePath: string): Promise<void> {
+    this.isInitialized = true;
+    console.log("[GeminiService] Vector Mode Initialized (PDF handled via Pinecone).");
+  }
 }
+
+
 
 
 
