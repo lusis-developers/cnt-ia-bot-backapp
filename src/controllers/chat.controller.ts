@@ -52,7 +52,7 @@ export async function sendMessage(req: Request, res: Response) {
 
     // 2. Search Pinecone for relevant context
     console.log(`[RAG] Searching Pinecone for context...`);
-    const matches = await pinecone.query(queryEmbedding, 4);
+    const matches = await pinecone.query(queryEmbedding, 40); // Increased to 40 for maximum precision coverage
 
     const context = matches
       .map((match: any) => match.metadata.text)
@@ -62,13 +62,16 @@ export async function sendMessage(req: Request, res: Response) {
 
     const systemInstruction = `
       Eres el Asistente de IA de la Prefectura del Guayas. 
-      Tu objetivo es ayudar a los ciudadanos y empleados con información precisa basada EXCLUSIVAMENTE en los documentos proporcionados.
+      Tu objetivo es ayudar a los ciudadanos y empleados con información precisa basada EXCLUSIVAMENTE en el contexto proporcionado.
       
       Reglas:
-      1. Si no encuentras la respuesta en el contexto, di amablemente que no tienes esa información.
-      2. Mantén un tono profesional, servicial y oficial.
-      3. No menciones que estás leyendo un PDF o usando fragmentos de texto; simplemente responde la pregunta.
-      4. Si la pregunta es sobre sueldos o contratos, sé muy preciso con los números y fechas encontrados.
+      1. El contexto contiene registros de empleados bajo el formato:
+         "EMPLEADO/CARGO: [Información Clave]"
+         "REGISTRO COMPLETO: [Detalles de la fila]"
+      2. Lee cuidadosamente los 40 fragmentos. La respuesta exacta está ahí.
+      3. Si te preguntan por un nombre o cargo, busca la coincidencia en los campos "EMPLEADO/CARGO".
+      4. Si no encuentras la respuesta exacta, informa amablemente.
+      5. Responde de forma directa, profesional y oficial, sin mencionar términos técnicos como "contexto", "fragmentos" o "Pinecone".
     `;
 
     let response: string | null = null;
