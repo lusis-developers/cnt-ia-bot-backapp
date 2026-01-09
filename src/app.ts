@@ -17,7 +17,8 @@ function createApp() {
     'http://localhost:5173',
     'http://localhost:3000',
     'https://develop.fudibot-front.pages.dev',
-    'https://app.fudibot.com'
+    'https://app.fudibot.com',
+    "https://agente-prefectura-del-guayas.netlify.app"
   ]
 
   app.use(cors({ origin: whitelist }));

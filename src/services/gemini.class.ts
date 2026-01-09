@@ -96,11 +96,20 @@ class GeminiService extends EventEmitter {
         }
       });
 
-      this.fileUri = uploadResult.file.uri;
-      this.fileName = uploadResult.file.name;
+      console.log(`[GeminiService] Upload result:`, JSON.stringify(uploadResult, null, 2));
+
+      // Standard access for the newer SDK: result is the file object
+      this.fileUri = uploadResult.uri || (uploadResult.file && uploadResult.file.uri);
+      this.fileName = uploadResult.name || (uploadResult.file && uploadResult.file.name);
+
+      if (!this.fileUri || !this.fileName) {
+        throw new Error("Could not extract fileUri or fileName from upload result");
+      }
 
       // Wait for the file to be processed (ACTUAL PROCESSING status check)
       let file = await this.ai.files.get({ name: this.fileName });
+      console.log(`[GeminiService] File initial state: ${file.state}`);
+
       while (file.state === "PROCESSING") {
         console.log("[GeminiService] Processing file...");
         await new Promise(resolve => setTimeout(resolve, 3000));
@@ -113,7 +122,7 @@ class GeminiService extends EventEmitter {
 
       this.isInitialized = true;
       this.saveCache();
-      console.log("[GeminiService] File ready and cached.");
+      console.log("[GeminiService] File ready and active.");
     } catch (error) {
       console.error("[GeminiService] Error initializing file:", error);
       throw error;

@@ -86,72 +86,71 @@ class ClaudeService extends EventEmitter {
 
   /**
    * Generates a message using Claude.
-   * @param systemPrompt The system prompt to set the persona and context.
-   * @param userMessage The user's query.
-   * @param history Optional chat history.
-   * @param model The Claude model to use.
-   * @returns The generated response text.
+   * Generates a response using Claude with the PDF as context.
+   * @param systemPrompt The system instructions.
+   * @param userMessage The user query.
+   * @param history The conversation history.
+   * @returns The generated response.
    */
-  async generateText(
-    systemPrompt: string,
-    userMessage: string,
-    history: any[] = [],
-    model: string = "claude-sonnet-4-5" // Reverting to the model ID originally in the codebase
-  ): Promise<string | null> {
+  async generateText(systemPrompt: string, userMessage: string, history: any[]): Promise<string | null> {
     try {
-      const messages: any[] = history.map((msg: any) => ({
+      // Keep only last message to minimize tokens and ensure instant response
+      const trimmedHistory = history.slice(-1).map(msg => ({
         role: msg.role === 'assistant' ? 'assistant' : 'user',
-        content: msg.content,
+        content: msg.content
       }));
 
-      // Add the current user message with the file context if available
-      const userContent: any[] = [];
+      // Read PDF once
+      const pdfData = await fs.promises.readFile(path.resolve(process.cwd(), 'src/data/info-empleados.pdf'), { encoding: 'base64' });
 
-      if (this.fileId) {
-        userContent.push({
-          type: 'document',
-          source: {
-            type: 'file',
-            file_id: this.fileId,
-          },
-          // Enable prompt caching for the document
-          cache_control: { type: 'ephemeral' }
-        });
-      }
-
-      userContent.push({
-        type: 'text',
-        text: userMessage,
-      });
-
-      messages.push({
-        role: 'user',
-        content: userContent,
-      });
-
+      // Using the environment's standard model (2026 stack)
       const response = await this.client.messages.create({
-        model: model,
-        max_tokens: 4096,
-        system: systemPrompt,
-        messages: messages,
+        model: "claude-sonnet-4-5",
+        max_tokens: 1024,
+        system: [
+          {
+            type: "text",
+            text: systemPrompt,
+            cache_control: { type: "ephemeral" }
+          }
+        ],
+        messages: [
+          ...trimmedHistory,
+          {
+            role: "user",
+            content: [
+              {
+                type: "document",
+                source: {
+                  type: "base64",
+                  media_type: "application/pdf",
+                  data: pdfData,
+                },
+                cache_control: { type: "ephemeral" }
+              },
+              {
+                type: "text",
+                text: userMessage
+              }
+            ]
+          }
+        ],
+      } as any, {
+        headers: {
+          "anthropic-beta": "prompt-caching-2024-07-31"
+        }
       });
 
-      // Claude responses are an array of blocks
-      const textBlock = response.content.find((block: any) => block.type === 'text');
-      return textBlock ? (textBlock as any).text : null;
-    } catch (error: any) {
-      // If the file ID is invalid/expired, clear cache and try to re-upload on next call
-      if (error.status === 404 || (error.message && error.message.includes('file_id'))) {
-        console.warn("Cached Claude file ID seems invalid or expired. Clearing cache.");
-        this.fileId = null;
-        if (fs.existsSync(this.cachePath)) fs.unlinkSync(this.cachePath);
-      }
-
+      return (response.content[0] as any).text;
+    } catch (error) {
       console.error("Error generating text with Claude:", error);
       return null;
     }
   }
 }
 
-export default ClaudeService;
 
+
+
+
+export default ClaudeService;
