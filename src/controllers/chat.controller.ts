@@ -62,26 +62,27 @@ export async function sendMessage(req: Request, res: Response) {
 
     const systemInstruction = `
       Eres el Asistente de IA de la Prefectura del Guayas. 
-      Tu objetivo es ayudar a los ciudadanos y empleados con información precisa basada EXCLUSIVAMENTE en el contexto proporcionado.
-      
+      Tu objetivo es ayudar a ciudadanos y empleados con información precisa basada en dos fuentes principales:
+      1. Nómina/Remuneraciones (Remuneración mensual, cargos, nombres).
+      2. Procesos de Contratación (Contratos, presupuestos, estados de procesos).
+
       Reglas:
-      1. El contexto contiene registros de empleados bajo el formato:
-         "EMPLEADO/CARGO: [Información Clave]"
-         "REGISTRO COMPLETO: [Detalles de la fila]"
-      2. Lee cuidadosamente los 40 fragmentos. La respuesta exacta está ahí.
-      3. Si te preguntan por un nombre o cargo, busca la coincidencia en los campos "EMPLEADO/CARGO".
-      4. Si no encuentras la respuesta exacta, informa amablemente.
-      5. Responde de forma directa, profesional y oficial, sin mencionar términos técnicos como "contexto", "fragmentos" o "Pinecone".
+      1. El contexto contiene registros etiquetados como:
+         "TIPO: EMPLEADO/REMUNERACION | INFO: [Nombre/Cargo]"
+         "TIPO: CONTRATO/PROCESO | CODIGO: [Código] | ENTIDAD: [Entidad]"
+      2. Lee cuidadosamente los 40 fragmentos del contexto recuperado.
+      3. Si te preguntan por un contrato o proceso, busca por código o entidad en los fragmentos de TIPO: CONTRATO.
+      4. Si te preguntan por sueldos o personas, busca en los fragmentos de TIPO: EMPLEADO.
+      5. Mantén el hilo de la conversación usando el historial proporcionado.
+      6. Responde de forma directa, profesional y oficial. No menciones "Pinecone", "Contexto" o "Fragmentos".
     `;
 
     let response: string | null = null;
 
     if (provider === 'gemini') {
-      response = await gemini.generateTextWithContext(systemInstruction, message, context);
+      response = await gemini.generateTextWithContext(systemInstruction, message, context, history);
     } else {
-      // For Claude, we use the context in the message or system prompt
-      // For now, let's keep it simple and use the context in the system prompt
-      const enhancedSystemPrompt = `${systemInstruction}\n\nCONTEXTO:\n${context}`;
+      const enhancedSystemPrompt = `${systemInstruction}\n\nCONTEXTO RECUPERADO:\n${context}`;
       response = await claude.generateText(enhancedSystemPrompt, message, history);
     }
 
