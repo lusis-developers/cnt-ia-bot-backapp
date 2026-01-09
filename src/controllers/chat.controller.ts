@@ -1,139 +1,105 @@
 import 'dotenv/config'
-import type { Request, Response } from "express";
-import path from "node:path";
-import fs from "node:fs";
+import { Request, Response } from "express";
 import GeminiService from "../services/gemini.class";
 import ClaudeService from "../services/claude.class";
-import { parseHistory } from "../utils/handleHistory";
+import PineconeService from "../services/pinecone.service";
 import axios from "axios";
 
-/**
- * Status Codes from Axios
- */
+// Status Codes from Axios
 const HttpStatusCode = axios.HttpStatusCode;
 
-/**
- * Initialize Services
- */
-const GEMINI_KEY = process.env.GEMINI_API_KEY || "";
-const CLAUDE_KEY = process.env.CLAUDE_API_KEY || "";
+// Service Instances
+const gemini = new GeminiService(process.env.GEMINI_API_KEY!);
+const claude = new ClaudeService(process.env.CLAUDE_API_KEY!);
+const pinecone = new PineconeService(
+  process.env.PINECONE_API_KEY!,
+  process.env.PINECONE_INDEX_NAME || 'prefectura-docs'
+);
 
-const gemini = new GeminiService(GEMINI_KEY);
-const claude = new ClaudeService(CLAUDE_KEY);
-
-const PDF_PATH = path.join(process.cwd(), "src/data/info-empleados.pdf");
-const CONTRACTS_PATH = path.join(process.cwd(), "src/data/contracts.json");
-
-// Flags to track RAG initialization
-let isGeminiRagInitialized = false;
+let isRagInitialized = false;
 
 /**
- * Ensures that the PDF is uploaded to Gemini (Multimodal).
+ * Ensures the RAG system is ready (checking Pinecone connection).
  */
-async function ensureGeminiRag() {
-  if (isGeminiRagInitialized) return;
+async function ensureRag() {
+  if (isRagInitialized) return;
+
   try {
-    await gemini.initializeFile(PDF_PATH);
-    isGeminiRagInitialized = true;
-    console.log("Gemini RAG (Multimodal) Initialized");
-  } catch (err) {
-    console.error("Gemini RAG Initialization error:", err);
+    // Pinecone just needs to be instantiated, but we could do a ping here if needed
+    isRagInitialized = true;
+    console.log("Vector RAG (Pinecone) Initialized");
+  } catch (error) {
+    console.error("Error initializing Vector RAG:", error);
   }
 }
 
 /**
- * Ensures that the PDF is uploaded to Claude.
+ * Handles incoming chat messages using Vector RAG.
  */
-async function ensureClaudeRag() {
-  try {
-    await claude.uploadFile(PDF_PATH);
-  } catch (err) {
-    console.error("Claude RAG Initialization error:", err);
+export async function sendMessage(req: Request, res: Response) {
+  const { message, history = [], provider = 'gemini' } = req.body;
+
+  if (!message) {
+    return res.status(HttpStatusCode.BadRequest).send({ message: "Message is required." });
   }
-}
 
-/**
- * Handles chat messages using Claude (primary) or Gemini (fallback).
- * @param req Express Request
- * @param res Express Response
- */
-async function sendMessage(req: Request, res: Response) {
   try {
-    const { message, history, provider = "gemini" } = req.body;
+    await ensureRag();
 
-    if (!message) {
-      res.status(HttpStatusCode.BadRequest).send({
-        message: "Message is required"
-      });
-      return;
-    }
+    // 1. Generate Embedding for the user query
+    console.log(`[RAG] Generating embedding for query: "${message.substring(0, 50)}..."`);
+    const queryEmbedding = await gemini.getEmbeddings(message);
 
-    // Read contracts context
-    const contractsData = fs.readFileSync(CONTRACTS_PATH, "utf-8");
-    const parsedHistory = history ? parseHistory(history) : [];
+    // 2. Search Pinecone for relevant context
+    console.log(`[RAG] Searching Pinecone for context...`);
+    const matches = await pinecone.query(queryEmbedding, 4);
 
-    const systemPrompt = `
-      You are the Prefecture's AI Assistant. Your goal is to help users with information about the institution and its procurement processes.
+    const context = matches
+      .map((match: any) => match.metadata.text)
+      .join('\n---\n');
+
+    console.log(`[RAG] Found ${matches.length} relevant context chunks.`);
+
+    const systemInstruction = `
+      Eres el Asistente de IA de la Prefectura del Guayas. 
+      Tu objetivo es ayudar a los ciudadanos y empleados con información precisa basada EXCLUSIVAMENTE en los documentos proporcionados.
       
-      You have access to:
-      1. Employee information and internal procedures (provided via indexed PDF context).
-      2. Current procurement contracts (provided in JSON below).
-      
-      Instructions:
-      - Always respond professionally and helpfully in Spanish.
-      - Use the provided context to answer questions accurately.
-      - If the information is not in the context, inform the user politely.
-      - Mention that this is a preview and the system can scale to handle thousands of contracts.
-      
-      CONTRACTS CONTEXT (JSON):
-      ${contractsData}
+      Reglas:
+      1. Si no encuentras la respuesta en el contexto, di amablemente que no tienes esa información.
+      2. Mantén un tono profesional, servicial y oficial.
+      3. No menciones que estás leyendo un PDF o usando fragmentos de texto; simplemente responde la pregunta.
+      4. Si la pregunta es sobre sueldos o contratos, sé muy preciso con los números y fechas encontrados.
     `;
 
-    let answer: string | null = null;
+    let response: string | null = null;
 
-    if (provider === "claude" && CLAUDE_KEY) {
-      // The service now handles caching internally, so no need for external ID management
-      await ensureClaudeRag();
-      answer = await claude.generateText(systemPrompt, message, history || []);
+    if (provider === 'gemini') {
+      response = await gemini.generateTextWithContext(systemInstruction, message, context);
     } else {
-      // Fallback to Gemini
-      await ensureGeminiRag();
-
-      const enhancedSystemPrompt = `
-        ${systemPrompt}
-        
-        INSTRUCCIONES DE CONTEXTO (PDF):
-        - Se te ha proporcionado un archivo PDF que contiene la lista completa de empleados, sus cargos y remuneraciones.
-        - Analiza el documento detalladamente para responder preguntas sobre sueldos, nombres de directores y departamentos.
-        - Si el usuario pregunta por "Director de Tecnología", busca en la tabla de remuneraciones o el distributivo de personal.
-        - Responde basándote estrictamente en los datos del PDF.
-        
-        HISTORIAL DE CHAT:
-        ${parsedHistory}
-      `;
-
-      answer = await gemini.generateText(enhancedSystemPrompt, message, "gemini-flash-latest");
-
-      // Si Gemini falla (ej. por cuota), intentamos con Claude como último recurso
-      if (!answer && CLAUDE_KEY) {
-        console.log("Gemini failed, trying Claude as final fallback...");
-        await ensureClaudeRag();
-        answer = await claude.generateText(systemPrompt, message, history || []);
-      }
+      // For Claude, we use the context in the message or system prompt
+      // For now, let's keep it simple and use the context in the system prompt
+      const enhancedSystemPrompt = `${systemInstruction}\n\nCONTEXTO:\n${context}`;
+      response = await claude.generateText(enhancedSystemPrompt, message, history);
     }
 
-    res.status(HttpStatusCode.Ok).send({
-      message: "Chat response generated successfully.",
-      provider: answer ? (provider === "claude" ? "claude" : "gemini") : "none",
-      answer: answer || "I'm sorry, I couldn't generate a response at this moment."
+    if (!response) {
+      return res.status(HttpStatusCode.InternalServerError).send({
+        message: "Error generating response from AI."
+      });
+    }
+
+    return res.status(HttpStatusCode.Ok).send({
+      message: "Success",
+      response,
+      contextUsed: matches.length > 0
     });
-    return;
-  } catch (error) {
-    console.error("Error in chat.controller.sendMessage:", error);
-    res.status(HttpStatusCode.InternalServerError).send({
-      message: "An error occurred while processing the chat request."
+
+  } catch (error: any) {
+    console.error("Chat Controller Error:", error);
+    return res.status(HttpStatusCode.InternalServerError).send({
+      message: "Internal server error.",
+      error: error.message
     });
-    return;
   }
 }
 
