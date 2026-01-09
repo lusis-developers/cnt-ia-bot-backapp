@@ -32,12 +32,9 @@ async function ingest() {
     }
   }
 
+  // 1. PROCESS PDF (EMPLOYEES)
   const text = data.text;
-  console.log(`Extracted text length: ${text.length}`);
-
-  // Delete existing vectors to ensure a clean re-ingestion
-  console.log("Cleaning existing index...");
-  await pinecone.deleteAll();
+  console.log(`Extracted PDF text length: ${text.length}`);
 
   // HEAVILY OPTIMIZED TABLE CHUNKING: Semantic Boosting
   const rawLines = text.split('\n')
@@ -46,13 +43,28 @@ async function ingest() {
 
   console.log(`Found ${rawLines.length} employee data rows.`);
 
-  const chunks: string[] = rawLines.map((line: string) => {
-    // Format: "EMPLEADO: [Name] | CARGO: [Role] | DATA: [Full Row]"
-    // We'll simplify the line for the "EMPLEADO" part to focus the embedding
-    return `EMPLEADO/CARGO: ${line.split(/\s{2,}/).slice(0, 3).join(' ')}\nREGISTRO COMPLETO: ${line}`;
+  const employeeChunks: string[] = rawLines.map((line: string) => {
+    return `TIPO: EMPLEADO/REMUNERACION | INFO: ${line.split(/\s{2,}/).slice(0, 3).join(' ')}\nREGISTRO COMPLETO: ${line}`;
   });
 
-  console.log(`Created ${chunks.length} semantically-boosted chunks. Generating embeddings...`);
+  // 2. PROCESS JSON (CONTRACTS)
+  const contractsPath = path.resolve(process.cwd(), 'src/data/contracts.json');
+  const contractsData = JSON.parse(fs.readFileSync(contractsPath, 'utf-8'));
+  const procesos = contractsData.procesos_contratacion || [];
+
+  console.log(`Found ${procesos.length} contracts in JSON.`);
+
+  const contractChunks: string[] = procesos.map((p: any) => {
+    return `TIPO: CONTRATO/PROCESO | CODIGO: ${p.codigo} | ENTIDAD: ${p.entidad_contratante}\nOBJETO: ${p.objeto_proceso}\nESTADO: ${p.estado_proceso} | PRESUPUESTO: ${p.presupuesto_referencial}\nUBICACION: ${p.ubicacion.provincia} - ${p.ubicacion.canton}`;
+  });
+
+  const chunks = [...employeeChunks, ...contractChunks];
+
+  // Delete existing vectors to ensure a clean re-ingestion of BOTH sources
+  console.log("Cleaning existing index for fresh dual-source ingestion...");
+  await pinecone.deleteAll();
+
+  console.log(`Created ${chunks.length} total boosted chunks. Generating embeddings...`);
 
   const vectors: any[] = [];
   for (let i = 0; i < chunks.length; i++) {
