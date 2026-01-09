@@ -35,22 +35,24 @@ async function ingest() {
   const text = data.text;
   console.log(`Extracted text length: ${text.length}`);
 
-  // Simple chunking strategy: split by paragraphs or a fixed number of words
-  // For this document, splitting by double newline or fixed length works well
-  const rawChunks = text.split('\n\n').filter((chunk: string) => chunk.trim().length > 50);
+  // Delete existing vectors to ensure a clean re-ingestion
+  console.log("Cleaning existing index...");
+  await pinecone.deleteAll();
 
-  // If chunks are too large, sub-split them
-  const chunks: string[] = [];
-  for (const chunk of rawChunks) {
-    if (chunk.length > 2000) {
-      const subChunks = chunk.match(/.{1,2000}/g) || [];
-      chunks.push(...(subChunks as string[]));
-    } else {
-      chunks.push(chunk);
-    }
-  }
+  // HEAVILY OPTIMIZED TABLE CHUNKING: Semantic Boosting
+  const rawLines = text.split('\n')
+    .map((l: string) => l.trim())
+    .filter((l: string) => /^\d+\s+\d+/.test(l) && l.length > 50);
 
-  console.log(`Created ${chunks.length} chunks. Generating embeddings...`);
+  console.log(`Found ${rawLines.length} employee data rows.`);
+
+  const chunks: string[] = rawLines.map((line: string) => {
+    // Format: "EMPLEADO: [Name] | CARGO: [Role] | DATA: [Full Row]"
+    // We'll simplify the line for the "EMPLEADO" part to focus the embedding
+    return `EMPLEADO/CARGO: ${line.split(/\s{2,}/).slice(0, 3).join(' ')}\nREGISTRO COMPLETO: ${line}`;
+  });
+
+  console.log(`Created ${chunks.length} semantically-boosted chunks. Generating embeddings...`);
 
   const vectors: any[] = [];
   for (let i = 0; i < chunks.length; i++) {
