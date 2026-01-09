@@ -3,6 +3,7 @@ import { Request, Response } from "express";
 import GeminiService from "../services/gemini.class";
 import ClaudeService from "../services/claude.class";
 import PineconeService from "../services/pinecone.service";
+import contificoService from "../services/contifico.service";
 import axios from "axios";
 
 // Status Codes from Axios
@@ -50,9 +51,9 @@ export async function sendMessage(req: Request, res: Response) {
     console.log(`[RAG] Generating embedding for query: "${message.substring(0, 50)}..."`);
     const queryEmbedding = await gemini.getEmbeddings(message);
 
-    // 2. Search Pinecone for relevant context
+    // 2. Search Pinecone for relevant context (Employees & Contracts)
     console.log(`[RAG] Searching Pinecone for context...`);
-    const matches = await pinecone.query(queryEmbedding, 40); // Increased to 40 for maximum precision coverage
+    const matches = await pinecone.query(queryEmbedding, 40);
 
     const context = matches
       .map((match: any) => match.metadata.text)
@@ -60,29 +61,54 @@ export async function sendMessage(req: Request, res: Response) {
 
     console.log(`[RAG] Found ${matches.length} relevant context chunks.`);
 
+    // 3. SECURE BUSINESS CONTEXT: Contífico Integration
+    let businessContext = "";
+    try {
+      console.log(`[BUSINESS] Fetching real-time context from Contífico...`);
+      // For now, let's fetch a small sample of products and recent docs
+      const [products, recentDocs] = await Promise.all([
+        contificoService.getProducts(),
+        contificoService.getDocuments({ result_size: 5 })
+      ]);
+
+      if (Array.isArray(products) && products.length > 0) {
+        businessContext += "\nINVENTARIO RECIENTE (Contífico):\n" +
+          products.slice(0, 10).map((p: any) => `- ${p.nombre}: $${p.pvp} (${p.codigo})`).join("\n");
+      }
+
+      if (Array.isArray(recentDocs) && recentDocs.length > 0) {
+        businessContext += "\nULTIMAS TRANSACCIONES (Contífico):\n" +
+          recentDocs.map((d: any) => `- Doc: ${d.documento} | Cliente: ${d.cliente?.razon_social} | Total: $${d.total} | Estado: ${d.estado}`).join("\n");
+      }
+    } catch (err) {
+      console.error(`[BUSINESS] Source error:`, err);
+    }
+
     const systemInstruction = `
       Eres el Asistente de IA de la Prefectura del Guayas. 
-      Tu objetivo es ayudar a ciudadanos y empleados con información precisa basada en dos fuentes principales:
-      1. Nómina/Remuneraciones (Remuneración mensual, cargos, nombres).
-      2. Procesos de Contratación (Contratos, presupuestos, estados de procesos).
-
-      Reglas:
-      1. El contexto contiene registros etiquetados como:
-         "TIPO: EMPLEADO/REMUNERACION | INFO: [Nombre/Cargo]"
-         "TIPO: CONTRATO/PROCESO | CODIGO: [Código] | ENTIDAD: [Entidad]"
-      2. Lee cuidadosamente los 40 fragmentos del contexto recuperado.
-      3. Si te preguntan por un contrato o proceso, busca por código o entidad en los fragmentos de TIPO: CONTRATO.
-      4. Si te preguntan por sueldos o personas, busca en los fragmentos de TIPO: EMPLEADO.
-      5. Mantén el hilo de la conversación usando el historial proporcionado.
-      6. Responde de forma directa, profesional y oficial. No menciones "Pinecone", "Contexto" o "Fragmentos".
+      Tu objetivo es servir a la ciudadanía y empleados con información oficial y precisa.
+      
+      Reglas de Identidad y Fuentes:
+      1. Identidad Principal: Eres el Agente Oficial de la Prefectura del Guayas.
+      2. Datos de Negocio (Nicole Pastry Arts): Cuando el usuario pregunte por facturación, inventario o datos provenientes de [CONTIFICO], debes indicar claramente que esa información pertenece al negocio "Nicole Pastry Arts".
+      3. Datos de Nómina y Contratos: Usa la información de [EMPLEADO/REMUNERACION] y [CONTRATO/PROCESO] como información oficial de la Prefectura.
+      
+      Instrucciones de Respuesta:
+      - Mantén un tono profesional, servicial y oficial.
+      - Para preguntas de contabilidad/ERP, usa el contexto de Contífico y menciona la marca "Nicole Pastry Arts".
+      - Para preguntas de sueldos o licitaciones, responde directamente con los datos de la Prefectura.
+      - Mantén el hilo de la conversación usando el historial.
+      - No menciones detalles técnicos como "Pinecone", "Vectores" o "40 fragmentos".
     `;
+
+    const finalContext = `${context}\n${businessContext}`;
 
     let response: string | null = null;
 
     if (provider === 'gemini') {
-      response = await gemini.generateTextWithContext(systemInstruction, message, context, history);
+      response = await gemini.generateTextWithContext(systemInstruction, message, finalContext, history);
     } else {
-      const enhancedSystemPrompt = `${systemInstruction}\n\nCONTEXTO RECUPERADO:\n${context}`;
+      const enhancedSystemPrompt = `${systemInstruction}\n\nCONTEXTO RECUPERADO:\n${finalContext}`;
       response = await claude.generateText(enhancedSystemPrompt, message, history);
     }
 
