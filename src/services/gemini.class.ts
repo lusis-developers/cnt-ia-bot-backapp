@@ -26,7 +26,7 @@ class GeminiService extends EventEmitter {
   /**
    * Generates content using context provided (Vector RAG style).
    */
-  async generateTextWithContext(systemInstruction: string, userMessage: string, context: string, model: string = "gemini-1.5-flash"): Promise<string | null> {
+  async generateTextWithContext(systemInstruction: string, userMessage: string, context: string, model: string = "gemini-flash-latest"): Promise<string | null> {
     try {
       const generativeModel = this.genAI.getGenerativeModel({
         model: model,
@@ -61,7 +61,7 @@ class GeminiService extends EventEmitter {
   /**
    * Compatibility method for older multimodal approach.
    */
-  async generateText(systemInstruction: string, userMessage: string, model: string = "gemini-1.5-flash"): Promise<string | null> {
+  async generateText(systemInstruction: string, userMessage: string, model: string = "gemini-flash-latest"): Promise<string | null> {
     try {
       const generativeModel = this.genAI.getGenerativeModel({
         model: model,
