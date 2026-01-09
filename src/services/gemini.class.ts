@@ -24,18 +24,47 @@ class GeminiService extends EventEmitter {
   }
 
   /**
-   * Generates content using context provided (Vector RAG style).
+   * Generates content using context provided (Vector RAG style) with History support.
    */
-  async generateTextWithContext(systemInstruction: string, userMessage: string, context: string, model: string = "gemini-flash-latest"): Promise<string | null> {
+  async generateTextWithContext(systemInstruction: string, userMessage: string, context: string, history: any[] = [], model: string = "gemini-flash-latest"): Promise<string | null> {
     try {
       const generativeModel = this.genAI.getGenerativeModel({
         model: model,
         systemInstruction: systemInstruction
       });
 
-      const fullPrompt = `Contexto del PDF:\n${context}\n\nPregunta: ${userMessage}`;
+      // Format history and ensure it starts with a 'user' role
+      let rawHistory = history.map(h => ({
+        role: h.role === 'user' ? 'user' : 'model',
+        parts: [{ text: h.content }]
+      }));
 
-      const result = await generativeModel.generateContent(fullPrompt);
+      // 1. Gemini SDK requires history to start with 'user'
+      const firstUserIndex = rawHistory.findIndex(m => m.role === 'user');
+      if (firstUserIndex !== -1) {
+        rawHistory = rawHistory.slice(firstUserIndex);
+      } else {
+        rawHistory = [];
+      }
+
+      // 2. Gemini SDK requires alternating roles (user, model, user, model)
+      const chatHistory: any[] = [];
+      for (const msg of rawHistory) {
+        if (chatHistory.length > 0 && chatHistory[chatHistory.length - 1].role === msg.role) {
+          // Merge consecutive messages from same role
+          chatHistory[chatHistory.length - 1].parts[0].text += `\n${msg.parts[0].text}`;
+        } else {
+          chatHistory.push(msg);
+        }
+      }
+
+      const chat = generativeModel.startChat({
+        history: chatHistory,
+      });
+
+      const fullPrompt = `Contexto Recuperado:\n${context}\n\nPregunta: ${userMessage}`;
+
+      const result = await chat.sendMessage(fullPrompt);
       const response = await result.response;
       return response.text();
     } catch (error: any) {
