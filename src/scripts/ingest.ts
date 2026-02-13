@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 const pdf = require('pdf-parse');
 import GeminiService from '../services/gemini.class';
 import PineconeService from '../services/pinecone.service';
+import contificoService from '../services/contifico.service';
 import { v4 as uuidv4 } from 'uuid';
 
 dotenv.config();
@@ -58,10 +59,35 @@ async function ingest() {
     return `TIPO: CONTRATO/PROCESO | CODIGO: ${p.codigo} | ENTIDAD: ${p.entidad_contratante}\nOBJETO: ${p.objeto_proceso}\nESTADO: ${p.estado_proceso} | PRESUPUESTO: ${p.presupuesto_referencial}\nUBICACION: ${p.ubicacion.provincia} - ${p.ubicacion.canton}`;
   });
 
-  const chunks = [...employeeChunks, ...contractChunks];
+  // 3. PROCESS CONTIFICO (BUSINESS)
+  console.log("Fetching data from Contífico for ingestion...");
+  let contificoChunks: string[] = [];
+  try {
+    const [products, recentDocs] = await Promise.all([
+      contificoService.getProducts(),
+      contificoService.getDocuments({ result_size: 20 })
+    ]);
 
-  // Delete existing vectors to ensure a clean re-ingestion of BOTH sources
-  console.log("Cleaning existing index for fresh dual-source ingestion...");
+    if (Array.isArray(products)) {
+      products.forEach((p: any) => {
+        contificoChunks.push(`TIPO: NEGOCIO/CONTIFICO | PRODUCTO: ${p.nombre} | PRECIO: $${p.pvp} | CODIGO: ${p.codigo}\nCATEGORIA: ${p.categoria?.nombre || 'N/A'}`);
+      });
+    }
+
+    if (Array.isArray(recentDocs)) {
+      recentDocs.forEach((d: any) => {
+        contificoChunks.push(`TIPO: NEGOCIO/CONTIFICO | DOCUMENTO: ${d.documento} | CLIENTE: ${d.cliente?.razon_social} | TOTAL: $${d.total}\nFECHA: ${d.fecha_emision} | ESTADO: ${d.estado}`);
+      });
+    }
+    console.log(`Created ${contificoChunks.length} business data chunks.`);
+  } catch (err) {
+    console.error("Failed to fetch Contífico data for ingestion, skipping...");
+  }
+
+  const chunks = [...employeeChunks, ...contractChunks, ...contificoChunks];
+
+  // Delete existing vectors to ensure a clean re-ingestion of ALL sources
+  console.log("Cleaning existing index for fresh triple-source ingestion...");
   await pinecone.deleteAll();
 
   console.log(`Created ${chunks.length} total boosted chunks. Generating embeddings...`);

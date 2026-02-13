@@ -61,28 +61,8 @@ export async function sendMessage(req: Request, res: Response) {
 
     console.log(`[RAG] Found ${matches.length} relevant context chunks.`);
 
-    // 3. SECURE BUSINESS CONTEXT: Contífico Integration
-    let businessContext = "";
-    try {
-      console.log(`[BUSINESS] Fetching real-time context from Contífico...`);
-      // For now, let's fetch a small sample of products and recent docs
-      const [products, recentDocs] = await Promise.all([
-        contificoService.getProducts(),
-        contificoService.getDocuments({ result_size: 5 })
-      ]);
-
-      if (Array.isArray(products) && products.length > 0) {
-        businessContext += "\nINVENTARIO RECIENTE (Contífico):\n" +
-          products.slice(0, 10).map((p: any) => `- ${p.nombre}: $${p.pvp} (${p.codigo})`).join("\n");
-      }
-
-      if (Array.isArray(recentDocs) && recentDocs.length > 0) {
-        businessContext += "\nULTIMAS TRANSACCIONES (Contífico):\n" +
-          recentDocs.map((d: any) => `- Doc: ${d.documento} | Cliente: ${d.cliente?.razon_social} | Total: $${d.total} | Estado: ${d.estado}`).join("\n");
-      }
-    } catch (err) {
-      console.error(`[BUSINESS] Source error:`, err);
-    }
+    // 3. BUSINESS CONTEXT (Now retrieved via RAG in Step 2 for high performance)
+    // We avoid real-time calls during chat to ensure sub-second response times.
 
     const systemInstruction = `
       Eres el Asistente de IA de la Prefectura del Guayas. 
@@ -101,14 +81,12 @@ export async function sendMessage(req: Request, res: Response) {
       - No menciones detalles técnicos como "Pinecone", "Vectores" o "40 fragmentos".
     `;
 
-    const finalContext = `${context}\n${businessContext}`;
-
     let response: string | null = null;
 
     if (provider === 'gemini') {
-      response = await gemini.generateTextWithContext(systemInstruction, message, finalContext, history);
+      response = await gemini.generateTextWithContext(systemInstruction, message, context, history);
     } else {
-      const enhancedSystemPrompt = `${systemInstruction}\n\nCONTEXTO RECUPERADO:\n${finalContext}`;
+      const enhancedSystemPrompt = `${systemInstruction}\n\nCONTEXTO RECUPERADO:\n${context}`;
       response = await claude.generateText(enhancedSystemPrompt, message, history);
     }
 

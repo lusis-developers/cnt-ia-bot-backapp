@@ -30,7 +30,8 @@ class ContificoService {
         headers: {
           Authorization: this.apiKey
         },
-        params: params
+        params: params,
+        timeout: 5000 // 5 second timeout to prevent hangs
       });
       return response.data;
     } catch (error: any) {
