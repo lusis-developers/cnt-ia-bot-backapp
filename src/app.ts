@@ -19,7 +19,7 @@ function createApp() {
     'https://develop.fudibot-front.pages.dev',
     'https://app.fudibot.com',
     "https://agente-prefectura-del-guayas.netlify.app",
-    ""
+    "https://cnt-agent.netlify.app"
   ]
 
   app.use(cors({ origin: whitelist }));
