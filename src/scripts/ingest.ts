@@ -17,7 +17,7 @@ async function ingest() {
   );
 
   const staticDir = path.resolve(process.cwd(), 'src/data/static');
-  
+
   if (!fs.existsSync(staticDir)) {
     console.error(`Directory not found: ${staticDir}`);
     return;
@@ -53,49 +53,21 @@ async function ingest() {
       const text = data.text;
       // Basic recursive character splitting or sentence-based splitting
       const rawChunks = text.split('\n\n').filter((c: string) => c.trim().length > 50);
-      
+
       rawChunks.forEach((chunk: string) => {
         allChunks.push({
           text: `FILE: ${fileName}\nCONTENT: ${chunk.trim()}`,
           source: fileName
         });
       });
-      
+
     } catch (err) {
       console.error(`Failed to process ${fileName}:`, err);
     }
   }
 
-  // OPTIONAL: Keep Contifico ingestion if keys are present
-  if (process.env.CONTIFICO_API_KEY) {
-    console.log("Fetching additional data from Contífico...");
-    try {
-      const [products, recentDocs] = await Promise.all([
-        contificoService.getProducts(),
-        contificoService.getDocuments({ result_size: 20 })
-      ]);
-
-      if (Array.isArray(products)) {
-        products.forEach((p: any) => {
-          allChunks.push({
-            text: `TIPO: PRODUCTO | NOMBRE: ${p.nombre} | PRECIO: $${p.pvp} | CODIGO: ${p.codigo}`,
-            source: 'contifico-products'
-          });
-        });
-      }
-
-      if (Array.isArray(recentDocs)) {
-        recentDocs.forEach((d: any) => {
-          allChunks.push({
-            text: `TIPO: DOCUMENTO | CLIENTE: ${d.cliente?.razon_social} | TOTAL: $${d.total} | FECHA: ${d.fecha_emision}`,
-            source: 'contifico-docs'
-          });
-        });
-      }
-    } catch (err) {
-      console.warn("Contifico data fetch failed, skipping...");
-    }
-  }
+  // OPTIONAL: Keep Contifico ingestion if keys are present -> REMOVED FOR CNT AGENT
+  // if (process.env.CONTIFICO_API_KEY) { ... }
 
   console.log(`Total chunks created: ${allChunks.length}. Generating embeddings and upserting...`);
 

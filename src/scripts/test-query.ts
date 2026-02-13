@@ -10,7 +10,7 @@ async function testQuery() {
     process.env.PINECONE_INDEX_NAME!
   );
 
-  const queryText = "¿Cuáles son los canales de recaudación?";
+  const queryText = "¿Cuáles son los beneficios para personas con discapacidad?";
   console.log(`Query: ${queryText}`);
 
   try {

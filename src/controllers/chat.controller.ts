@@ -3,7 +3,6 @@ import { Request, Response } from "express";
 import GeminiService from "../services/gemini.class";
 import ClaudeService from "../services/claude.class";
 import PineconeService from "../services/pinecone.service";
-import contificoService from "../services/contifico.service";
 import axios from "axios";
 
 // Status Codes from Axios
@@ -14,7 +13,7 @@ const gemini = new GeminiService(process.env.GEMINI_API_KEY!);
 const claude = new ClaudeService(process.env.CLAUDE_API_KEY!);
 const pinecone = new PineconeService(
   process.env.PINECONE_API_KEY!,
-  process.env.PINECONE_INDEX_NAME || 'prefectura-docs'
+  process.env.PINECONE_INDEX_NAME || 'cnt-contrato'
 );
 
 let isRagInitialized = false;
@@ -51,7 +50,7 @@ export async function sendMessage(req: Request, res: Response) {
     console.log(`[RAG] Generating embedding for query: "${message.substring(0, 50)}..."`);
     const queryEmbedding = await gemini.getEmbeddings(message);
 
-    // 2. Search Pinecone for relevant context (Employees & Contracts)
+    // 2. Search Pinecone for relevant context
     console.log(`[RAG] Searching Pinecone for context...`);
     const matches = await pinecone.query(queryEmbedding, 40);
 
@@ -61,24 +60,20 @@ export async function sendMessage(req: Request, res: Response) {
 
     console.log(`[RAG] Found ${matches.length} relevant context chunks.`);
 
-    // 3. BUSINESS CONTEXT (Now retrieved via RAG in Step 2 for high performance)
-    // We avoid real-time calls during chat to ensure sub-second response times.
-
     const systemInstruction = `
-      Eres el Agente de IA Oficial de la Prefectura del Guayas. 
-      Tu objetivo es servir a la ciudadanía y a los empleados con información oficial, precisa y actualizada sobre la provincia, procesos institucionales, trámites, licitaciones y servicios públicos.
+      Eres el Asistente Oficial de CNT Ecuador (Corporación Nacional de Telecomunicaciones).
+      Tu objetivo es asistir a los usuarios con información precisa basada EXCLUSIVAMENTE en los documentos oficiales proporcionados.
       
-      Reglas de Identidad y Fuentes:
-      1. Identidad Principal: Eres el Agente Oficial de la Prefectura del Guayas. Mantén siempre un tono profesional, servicial y respetuoso.
-      2. Datos Oficiales: Utiliza la información proporcionada en el contexto como la única fuente de verdad para datos específicos de la Prefectura (nómina, contratos, procesos, leyes).
-      3. Transparencia: Si no tienes información específica en el contexto para responder una pregunta, indícalo amablemente y sugiere al usuario visitar el sitio web oficial o contactar a las oficinas pertinentes.
+      Reglas de Identidad:
+      1. Identidad: Eres el Agente IA de CNT Ecuador.
+      2. Tono: Profesional, corporativo, amable y eficiente.
+      3. Fuente de Verdad: Responde basándote únicamente en el CONTEXTO RECUPERADO. Si la información no está en los documentos, indícalo amablemente.
       
       Instrucciones de Respuesta:
-      - Responde siempre de manera concisa y clara.
-      - Utiliza el historial de la conversación para mantener la coherencia del diálogo.
-      - Para preguntas sobre leyes o normativas (como la LORTI), extrae los puntos más relevantes del contexto proporcionado.
-      - No menciones detalles técnicos de la implementación (RAG, Pinecone, fragmentos, etc.).
-      - Tu prioridad es el bienestar y el servicio al ciudadano del Guayas.
+      - Prioriza la claridad y la precisión.
+      - Si te preguntan sobre leyes, reglamentos o procedimientos, cita la fuente si es evidente en el texto (ej. "según el Artículo X").
+      - No inventes información.
+      - Mantén el hilo de la conversación.
     `;
 
     let response: string | null = null;
