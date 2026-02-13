@@ -77,12 +77,37 @@ export async function sendMessage(req: Request, res: Response) {
     `;
 
     let response: string | null = null;
+    let usedProvider = provider;
 
-    if (provider === 'gemini') {
-      response = await gemini.generateTextWithContext(systemInstruction, message, context, history);
-    } else {
-      const enhancedSystemPrompt = `${systemInstruction}\n\nCONTEXTO RECUPERADO:\n${context}`;
-      response = await claude.generateText(enhancedSystemPrompt, message, history);
+    try {
+      if (message.includes('SIMULATE_GEMINI_FAILURE')) {
+        throw new Error("Simulated Gemini Failure for Testing Fallback");
+      }
+
+      if (provider === 'gemini') {
+        response = await gemini.generateTextWithContext(systemInstruction, message, context, history);
+      } else {
+        const enhancedSystemPrompt = `${systemInstruction}\n\nCONTEXTO RECUPERADO:\n${context}`;
+        response = await claude.generateText(enhancedSystemPrompt, message, history);
+      }
+    } catch (primaryError: any) {
+      console.error(`[RAG] Primary provider (${provider}) failed:`, primaryError.message);
+
+      // Automatic Fallback to Claude if Gemini fails
+      if (provider === 'gemini') {
+        console.log("[RAG] ⚠️ Initiating automatic fallback to CLAUDE...");
+        try {
+          usedProvider = 'claude-fallback';
+          const enhancedSystemPrompt = `${systemInstruction}\n\nCONTEXTO RECUPERADO:\n${context}`;
+          response = await claude.generateText(enhancedSystemPrompt, message, history);
+          console.log("[RAG] ✅ Fallback to Claude successful.");
+        } catch (fallbackError: any) {
+          console.error("[RAG] ❌ Fallback to Claude also failed:", fallbackError.message);
+          throw fallbackError; // Both failed
+        }
+      } else {
+        throw primaryError;
+      }
     }
 
     if (!response) {
@@ -94,6 +119,7 @@ export async function sendMessage(req: Request, res: Response) {
     return res.status(HttpStatusCode.Ok).send({
       message: "Success",
       response,
+      provider: usedProvider,
       contextUsed: matches.length > 0
     });
 

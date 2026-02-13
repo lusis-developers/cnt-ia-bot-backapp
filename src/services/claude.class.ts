@@ -96,49 +96,22 @@ class ClaudeService extends EventEmitter {
     try {
       // Keep only last message to minimize tokens and ensure instant response
       const trimmedHistory = history.slice(-1).map(msg => ({
-        role: msg.role === 'assistant' ? 'assistant' : 'user',
+        role: (msg.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
         content: msg.content
       }));
 
-      // Read PDF once
-      const pdfData = await fs.promises.readFile(path.resolve(process.cwd(), 'src/data/info-empleados.pdf'), { encoding: 'base64' });
-
-      // Using the environment's standard model (2026 stack)
+      // Verified working model for this API key
       const response = await this.client.messages.create({
-        model: "claude-sonnet-4-5",
+        model: "claude-3-haiku-20240307",
         max_tokens: 1024,
-        system: [
-          {
-            type: "text",
-            text: systemPrompt,
-            cache_control: { type: "ephemeral" }
-          }
-        ],
+        system: systemPrompt,
         messages: [
           ...trimmedHistory,
           {
             role: "user",
-            content: [
-              {
-                type: "document",
-                source: {
-                  type: "base64",
-                  media_type: "application/pdf",
-                  data: pdfData,
-                },
-                cache_control: { type: "ephemeral" }
-              },
-              {
-                type: "text",
-                text: userMessage
-              }
-            ]
+            content: userMessage
           }
         ],
-      } as any, {
-        headers: {
-          "anthropic-beta": "prompt-caching-2024-07-31"
-        }
       });
 
       return (response.content[0] as any).text;

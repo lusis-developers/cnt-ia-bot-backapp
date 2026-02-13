@@ -18,7 +18,8 @@ function createApp() {
     'http://localhost:3000',
     'https://develop.fudibot-front.pages.dev',
     'https://app.fudibot.com',
-    "https://agente-prefectura-del-guayas.netlify.app"
+    "https://agente-prefectura-del-guayas.netlify.app",
+    ""
   ]
 
   app.use(cors({ origin: whitelist }));
@@ -26,7 +27,7 @@ function createApp() {
   app.use(express.json());
 
   app.get('/', (_req, res: Response) => {
-    res.send('generate image is aliveee')
+    res.send('cnt agent is aliveee')
   });
 
   routerApi(app, io);
