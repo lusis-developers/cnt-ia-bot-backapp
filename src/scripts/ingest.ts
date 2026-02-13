@@ -13,113 +13,110 @@ async function ingest() {
   const gemini = new GeminiService(process.env.GEMINI_API_KEY!);
   const pinecone = new PineconeService(
     process.env.PINECONE_API_KEY!,
-    process.env.PINECONE_INDEX_NAME || 'prefectura-docs'
+    process.env.PINECONE_INDEX_NAME || 'prefectura-guayas'
   );
 
-  const pdfPath = path.resolve(process.cwd(), 'src/data/info-empleados.pdf');
-
-  console.log("Reading PDF...");
-  const dataBuffer = fs.readFileSync(pdfPath);
-  let data;
-  try {
-    const parser = new pdf.PDFParse({ data: dataBuffer });
-    data = await parser.getText();
-  } catch (err) {
-    console.log("DEBUG: Retrying with default pdf pattern...");
-    if (typeof pdf === 'function') {
-      data = await pdf(dataBuffer);
-    } else {
-      throw err;
-    }
+  const staticDir = path.resolve(process.cwd(), 'src/data/static');
+  
+  if (!fs.existsSync(staticDir)) {
+    console.error(`Directory not found: ${staticDir}`);
+    return;
   }
 
-  // 1. PROCESS PDF (EMPLOYEES)
-  const text = data.text;
-  console.log(`Extracted PDF text length: ${text.length}`);
+  const files = fs.readdirSync(staticDir).filter(f => f.endsWith('.pdf'));
+  console.log(`Found ${files.length} PDF files for ingestion.`);
 
-  // HEAVILY OPTIMIZED TABLE CHUNKING: Semantic Boosting
-  const rawLines = text.split('\n')
-    .map((l: string) => l.trim())
-    .filter((l: string) => /^\d+\s+\d+/.test(l) && l.length > 50);
-
-  console.log(`Found ${rawLines.length} employee data rows.`);
-
-  const employeeChunks: string[] = rawLines.map((line: string) => {
-    return `TIPO: EMPLEADO/REMUNERACION | INFO: ${line.split(/\s{2,}/).slice(0, 3).join(' ')}\nREGISTRO COMPLETO: ${line}`;
-  });
-
-  // 2. PROCESS JSON (CONTRACTS)
-  const contractsPath = path.resolve(process.cwd(), 'src/data/contracts.json');
-  const contractsData = JSON.parse(fs.readFileSync(contractsPath, 'utf-8'));
-  const procesos = contractsData.procesos_contratacion || [];
-
-  console.log(`Found ${procesos.length} contracts in JSON.`);
-
-  const contractChunks: string[] = procesos.map((p: any) => {
-    return `TIPO: CONTRATO/PROCESO | CODIGO: ${p.codigo} | ENTIDAD: ${p.entidad_contratante}\nOBJETO: ${p.objeto_proceso}\nESTADO: ${p.estado_proceso} | PRESUPUESTO: ${p.presupuesto_referencial}\nUBICACION: ${p.ubicacion.provincia} - ${p.ubicacion.canton}`;
-  });
-
-  // 3. PROCESS CONTIFICO (BUSINESS)
-  console.log("Fetching data from Contífico for ingestion...");
-  let contificoChunks: string[] = [];
-  try {
-    const [products, recentDocs] = await Promise.all([
-      contificoService.getProducts(),
-      contificoService.getDocuments({ result_size: 20 })
-    ]);
-
-    if (Array.isArray(products)) {
-      products.forEach((p: any) => {
-        contificoChunks.push(`TIPO: NEGOCIO/CONTIFICO | PRODUCTO: ${p.nombre} | PRECIO: $${p.pvp} | CODIGO: ${p.codigo}\nCATEGORIA: ${p.categoria?.nombre || 'N/A'}`);
-      });
-    }
-
-    if (Array.isArray(recentDocs)) {
-      recentDocs.forEach((d: any) => {
-        contificoChunks.push(`TIPO: NEGOCIO/CONTIFICO | DOCUMENTO: ${d.documento} | CLIENTE: ${d.cliente?.razon_social} | TOTAL: $${d.total}\nFECHA: ${d.fecha_emision} | ESTADO: ${d.estado}`);
-      });
-    }
-    console.log(`Created ${contificoChunks.length} business data chunks.`);
-  } catch (err) {
-    console.error("Failed to fetch Contífico data for ingestion, skipping...");
-  }
-
-  const chunks = [...employeeChunks, ...contractChunks, ...contificoChunks];
-
-  // Delete existing vectors to ensure a clean re-ingestion of ALL sources
-  console.log("Cleaning existing index for fresh triple-source ingestion...");
+  // Delete existing vectors for a clean start
+  console.log("Cleaning existing index for fresh ingestion...");
   await pinecone.deleteAll();
 
-  console.log(`Created ${chunks.length} total boosted chunks. Generating embeddings...`);
+  const allChunks: { text: string; source: string }[] = [];
 
-  const vectors: any[] = [];
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    console.log(`Processing chunk ${i + 1}/${chunks.length}...`);
+  for (const fileName of files) {
+    const pdfPath = path.join(staticDir, fileName);
+    console.log(`Processing file: ${fileName}...`);
 
-    // Generate embedding using Gemini
-    const embedding = await gemini.getEmbeddings(chunk);
-
-    vectors.push({
-      id: uuidv4(),
-      values: embedding,
-      metadata: {
-        text: chunk,
-        source: 'info-empleados.pdf',
-        chunkIndex: i
+    try {
+      const dataBuffer = fs.readFileSync(pdfPath);
+      let data;
+      try {
+        const parser = new pdf.PDFParse({ data: dataBuffer });
+        data = await parser.getText();
+      } catch (err) {
+        if (typeof pdf === 'function') {
+          data = await pdf(dataBuffer);
+        } else {
+          throw err;
+        }
       }
-    });
 
-    // Batch upsert to Pinecone to avoid large payloads if needed, 
-    // but for small files we can do it at once or in small groups
-    if (vectors.length >= 20) {
-      await pinecone.upsert(vectors.splice(0, 20));
+      const text = data.text;
+      // Basic recursive character splitting or sentence-based splitting
+      const rawChunks = text.split('\n\n').filter((c: string) => c.trim().length > 50);
+      
+      rawChunks.forEach((chunk: string) => {
+        allChunks.push({
+          text: `FILE: ${fileName}\nCONTENT: ${chunk.trim()}`,
+          source: fileName
+        });
+      });
+      
+    } catch (err) {
+      console.error(`Failed to process ${fileName}:`, err);
     }
   }
 
-  // Final batch
-  if (vectors.length > 0) {
+  // OPTIONAL: Keep Contifico ingestion if keys are present
+  if (process.env.CONTIFICO_API_KEY) {
+    console.log("Fetching additional data from Contífico...");
+    try {
+      const [products, recentDocs] = await Promise.all([
+        contificoService.getProducts(),
+        contificoService.getDocuments({ result_size: 20 })
+      ]);
+
+      if (Array.isArray(products)) {
+        products.forEach((p: any) => {
+          allChunks.push({
+            text: `TIPO: PRODUCTO | NOMBRE: ${p.nombre} | PRECIO: $${p.pvp} | CODIGO: ${p.codigo}`,
+            source: 'contifico-products'
+          });
+        });
+      }
+
+      if (Array.isArray(recentDocs)) {
+        recentDocs.forEach((d: any) => {
+          allChunks.push({
+            text: `TIPO: DOCUMENTO | CLIENTE: ${d.cliente?.razon_social} | TOTAL: $${d.total} | FECHA: ${d.fecha_emision}`,
+            source: 'contifico-docs'
+          });
+        });
+      }
+    } catch (err) {
+      console.warn("Contifico data fetch failed, skipping...");
+    }
+  }
+
+  console.log(`Total chunks created: ${allChunks.length}. Generating embeddings and upserting...`);
+
+  const batchSize = 25;
+  for (let i = 0; i < allChunks.length; i += batchSize) {
+    const batch = allChunks.slice(i, i + batchSize);
+    const vectors = await Promise.all(batch.map(async (item, index) => {
+      const embedding = await gemini.getEmbeddings(item.text);
+      return {
+        id: uuidv4(),
+        values: embedding,
+        metadata: {
+          text: item.text,
+          source: item.source,
+          chunkIndex: i + index
+        }
+      };
+    }));
+
     await pinecone.upsert(vectors);
+    console.log(`Progress: ${Math.min(i + batchSize, allChunks.length)}/${allChunks.length} chunks.`);
   }
 
   console.log("Ingestion complete!");

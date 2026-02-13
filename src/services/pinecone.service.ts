@@ -57,11 +57,19 @@ class PineconeService {
   async deleteAll() {
     try {
       const index = this.pc.index(this.indexName);
+      // Check if we can describe the index first to see if it's reachable
+      const stats = await index.describeIndexStats();
+      console.log(`[PineconeService] Index stats before delete:`, stats);
+
       await index.deleteAll();
       console.log("[PineconeService] Successfully deleted all vectors from index.");
-    } catch (error) {
-      console.error("[PineconeService] Error deleting vectors:", error);
-      throw error;
+    } catch (error: any) {
+      if (error.name === 'PineconeNotFoundError' || error.status === 404) {
+        console.warn("[PineconeService] Index might be empty or not yet fully provisioned for data operations. Skipping delete...");
+      } else {
+        console.error("[PineconeService] Error deleting vectors:", error);
+        throw error;
+      }
     }
   }
 }

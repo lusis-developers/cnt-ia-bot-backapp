@@ -78,7 +78,7 @@ class GeminiService extends EventEmitter {
    */
   async getEmbeddings(text: string): Promise<number[]> {
     try {
-      const model = this.genAI.getGenerativeModel({ model: "text-embedding-004" });
+      const model = this.genAI.getGenerativeModel({ model: "models/gemini-embedding-001" });
       const result = await model.embedContent(text);
       return result.embedding.values;
     } catch (error) {
